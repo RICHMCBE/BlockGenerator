@@ -1,8 +1,11 @@
 ---
 name: BlockGenerator
-version: 0.0.2
+version: 0.1.3
 main: NhanAZ\BlockGenerator\Main
 api: 5.0.0
+
+virions:
+  - NhanAZ/libBedrock
 
 website: https://github.com/NhanAZ
 description: Random blocks generator with water and fences.
