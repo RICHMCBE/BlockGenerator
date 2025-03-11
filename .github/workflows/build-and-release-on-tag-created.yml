@@ -1,0 +1,115 @@
+name: Auto Tag and Release
+on:
+  push:
+    paths:
+      - 'plugin.yml'  # plugin.yml이 변경되었을 때만 트리거
+
+jobs:
+  check-version:
+    runs-on: ubuntu-latest
+    permissions: write-all
+    outputs:
+      version: ${{ steps.check-version.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check version
+        id: check-version
+        run: |
+          # 현재 버전 가져오기
+          CURRENT_VERSION=$(grep -oP 'version:\s*\K[0-9.]+' plugin.yml)
+          echo "Current version: $CURRENT_VERSION"
+          echo "version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
+
+      - name: Create tag
+        run: |
+          VERSION=${{ steps.check-version.outputs.version }}
+          echo "Creating new tag v$VERSION"
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git tag "v$VERSION"
+          git push origin "v$VERSION"
+
+  release-latest:
+    needs: check-version
+    runs-on: ubuntu-latest
+    permissions: write-all
+    concurrency:
+      group: release-latest
+      cancel-in-progress: true
+    env:
+      RELEASE_DIR: "."
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+        with:
+          ref: 'v${{ needs.check-version.outputs.version }}'  # 새로 생성된 태그로 체크아웃
+
+      - name: Set up PHP 8.3
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: 8.3
+
+      - name: Download PresentKim/pmmp-plugin-build.php
+        run: wget -O .github/workflows/pmmp-plugin-build.php https://raw.githubusercontent.com/PresentKim/scripts-for-action/main/pmmp-plugin-build.php
+
+      - name: Build plugin with virion infecting
+        run: php -dphar.readonly=0 .github/workflows/pmmp-plugin-build.php ${{ env.RELEASE_DIR }}
+
+      - name: Find phar file and save path
+        run: |
+          PHAR_FILE=$(find .releases -name "*.phar" | head -n 1)
+          if [ -z "$PHAR_FILE" ]; then
+            echo "No .phar file found in .releases directory"
+            exit 1
+          fi
+          echo "PHAR_FILE=$PHAR_FILE" >> $GITHUB_ENV
+          echo "Found PHAR file: $PHAR_FILE"
+          echo "PHAR_FILENAME=$(basename $PHAR_FILE)" >> $GITHUB_ENV
+          
+          # 파일 정보 확인
+          ls -la "$PHAR_FILE"
+          file "$PHAR_FILE"
+
+      - name: Create release
+        uses: ncipollo/release-action@v1
+        with:
+          tag: 'v${{ needs.check-version.outputs.version }}'
+          artifacts: ".releases/*.phar"
+          allowUpdates: true
+
+  execute-server-command:
+    needs: [ check-version, release-latest ]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Execute update command on Pterodactyl server
+        run: |
+          REPO_NAME=$(echo "$GITHUB_REPOSITORY" | cut -d'/' -f2)
+          echo "실행 명령어: pu $REPO_NAME"
+
+          RESPONSE=$(curl -s -w "\n%{http_code}" \
+            "${{ secrets.PTERODACTYL_PANEL_URL }}/api/client/servers/${{ secrets.PTERODACTYL_SERVER_ID }}/command" \
+            -H "Authorization: Bearer ${{ secrets.PTERODACTYL_API_KEY }}" \
+            -H "Accept: application/json" \
+            -H "Content-Type: application/json" \
+            -X POST \
+            -d "{\"command\":\"pu $REPO_NAME\"}" || echo "curl 실패: $?" >&2)
+
+          COMMAND_RESULT=$(echo "$RESPONSE" | head -n -1)
+          HTTP_STATUS=$(echo "$RESPONSE" | tail -n 1)
+
+          echo "API 응답: '$COMMAND_RESULT'"
+          echo "HTTP 상태 코드: $HTTP_STATUS"
+
+          if [ "$HTTP_STATUS" -eq 204 ] || [ "$HTTP_STATUS" -eq 200 ]; then
+            echo "성공: 명령어 'pu $REPO_NAME' 실행 완료"
+          else
+            echo "실패: 상태 코드 $HTTP_STATUS, 응답: $COMMAND_RESULT"
+            exit 1
+          fi
+        shell: /usr/bin/bash -e {0}
+
+      - name: Send deployment notification
+        run: |
+          echo "Plugin version ${{ needs.check-version.outputs.version }} has been released and update command 'pu $REPO_NAME' has been executed on the server" >> $GITHUB_STEP_SUMMARY
