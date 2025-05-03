@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace NhanAZ\BlockGenerator;
 
-use NhanAZ\BlockGenerator\libs\NhanAZ\libBedrock\StringToBlock;
+use NhanAZ\libBedrock\StringToBlock;
 use pocketmine\block\Block;
 use pocketmine\block\BlockTypeIds;
 use pocketmine\block\Fence;
