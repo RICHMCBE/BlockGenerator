@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace NhanAZ\BlockGenerator;
 
-use NhanAZ\libBedrock\StringToBlock;
+use NhanAZ\BlockGenerator\libs\NhanAZ\libBedrock\StringToBlock;
 use pocketmine\block\Block;
 use pocketmine\block\BlockTypeIds;
 use pocketmine\block\Fence;
@@ -17,6 +17,7 @@ use pocketmine\plugin\PluginBase;
 use pocketmine\scheduler\ClosureTask;
 use pocketmine\world\Position;
 use pocketmine\world\sound\FizzSound;
+use RoMo\MineExp\MineExp;
 
 class Main extends PluginBase implements Listener {
 
@@ -183,6 +184,12 @@ class Main extends PluginBase implements Listener {
         $block = strval($blockArray[array_rand($blockArray)]);
         $block = StringToBlock::parse($block);
         $blockPos->getWorld()->setBlock($blockPos, $block, false);
+
+        // MineExp 플러그인에 울타리로 생성된 블록 위치 등록
+        $mineExpPlugin = $this->getServer()->getPluginManager()->getPlugin("MineExp");
+        if ($mineExpPlugin !== null && $mineExpPlugin instanceof MineExp) {
+            $mineExpPlugin->addFenceGeneratedBlock($blockPos);
+        }
     }
 
     private function playFizzSound(Position $blockPos): void {
