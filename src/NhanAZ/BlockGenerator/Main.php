@@ -9,15 +9,19 @@ use pocketmine\block\Block;
 use pocketmine\block\BlockTypeIds;
 use pocketmine\block\Fence;
 use pocketmine\block\Liquid;
-use pocketmine\block\VanillaBlocks;
-use pocketmine\block\Water;
+use pocketmine\event\block\BlockBreakEvent;
 use pocketmine\event\block\BlockUpdateEvent;
+use pocketmine\event\EventPriority;
 use pocketmine\event\Listener;
+use pocketmine\event\block\BlockFormEvent;
+use pocketmine\player\Player;
 use pocketmine\plugin\PluginBase;
 use pocketmine\scheduler\ClosureTask;
 use pocketmine\world\Position;
 use pocketmine\world\sound\FizzSound;
-use RoMo\MineExp\MineExp;
+use RoMo\ExpCore\data\ExpDAO;
+use RoMo\ExpCore\data\ExpDTO;
+
 
 class Main extends PluginBase implements Listener {
 
@@ -65,6 +69,19 @@ class Main extends PluginBase implements Listener {
         ]
     ];
 
+    /** @var array<string, array<int, int>> $blockExpValues */
+    private $blockExpValues = [
+        BlockTypeIds::COAL_ORE => 20,
+        BlockTypeIds::IRON_ORE => 30,
+        BlockTypeIds::GOLD_ORE => 30,
+        BlockTypeIds::REDSTONE_ORE => 45,
+        BlockTypeIds::LAPIS_LAZULI_ORE => 45,
+        BlockTypeIds::DIAMOND_ORE => 60,
+        BlockTypeIds::EMERALD_ORE => 80,
+        BlockTypeIds::STONE => 10,
+        BlockTypeIds::COBBLESTONE => 10,
+    ];
+
     /** @var bool $produceSound */
     private $produceSound = true;
 
@@ -77,10 +94,33 @@ class Main extends PluginBase implements Listener {
     /** @var int $delayTime */
     private $delayTime = 0; // 단위: 초
 
+    /** @var bool $preventWaterFlow */
+    private $preventWaterFlow = true;
+
     protected function onEnable(): void {
         $this->getServer()->getPluginManager()->registerEvents($this, $this);
         $this->validateBlocksData();
         $this->buildBlocks();
+
+        // 블록 업데이트 이벤트 처리
+        $this->getServer()->getPluginManager()->registerEvent(
+            BlockUpdateEvent::class,
+            function(BlockUpdateEvent $event) : void {
+                $this->handleBlockUpdate($event);
+            },
+            EventPriority::NORMAL,
+            $this
+        );
+
+        // 블록 파괴 이벤트 등록
+        $this->getServer()->getPluginManager()->registerEvent(
+            BlockBreakEvent::class,
+            function(BlockBreakEvent $event) : void {
+                $this->onBlockBreak($event);
+            },
+            EventPriority::MONITOR,
+            $this
+        );
     }
 
     private function validateBlocksData(): void {
@@ -175,7 +215,8 @@ class Main extends PluginBase implements Listener {
         }
     }
 
-    private function setBlock(Position $blockPos, string $fenceType): void {
+    private function setBlock(Position $blockPos, string $fenceType): void
+    {
         if (!isset($this->fenceSpecificBlocks[$fenceType]) || empty($this->fenceSpecificBlocks[$fenceType])) {
             return; // 블록 데이터가 없거나 비어있으면 처리하지 않음
         }
@@ -184,12 +225,6 @@ class Main extends PluginBase implements Listener {
         $block = strval($blockArray[array_rand($blockArray)]);
         $block = StringToBlock::parse($block);
         $blockPos->getWorld()->setBlock($blockPos, $block, false);
-
-        // MineExp 플러그인에 울타리로 생성된 블록 위치 등록
-        $mineExpPlugin = $this->getServer()->getPluginManager()->getPlugin("MineExp");
-        if ($mineExpPlugin !== null && $mineExpPlugin instanceof MineExp) {
-            $mineExpPlugin->addFenceGeneratedBlock($blockPos);
-        }
     }
 
     private function playFizzSound(Position $blockPos): void {
@@ -220,67 +255,136 @@ class Main extends PluginBase implements Listener {
         return null;
     }
 
-    public function onBlockUpdate(BlockUpdateEvent $event): void {
+    /**
+     * 블록 파괴 이벤트 처리
+     */
+    public function onBlockBreak(BlockBreakEvent $event): void {
+        $player = $event->getPlayer();
         $block = $event->getBlock();
+        $typeId = $block->getTypeId();
+
+        // 울타리 위에서 생성된 블록인지 확인 (위치 기반)
+        $fenceBelow = $this->hasFenceBelow($block->getPosition());
+        if ($fenceBelow === null) {
+            return; // 울타리 위에서 생성된 블록이 아니면 경험치 지급 안함
+        }
+
+        // 직접 경험치 처리
+        if (isset($this->blockExpValues[$typeId])) {
+            $exp = $this->blockExpValues[$typeId];
+            $this->giveExperience($player, $exp);
+        }
+    }
+
+    /**
+     * 플레이어에게 경험치 지급
+     */
+    private function giveExperience(Player $player, int $exp): void {
+        $expDao = ExpDAO::getInstance();
+        $expDto = $expDao->getCache((int) $player->getXuid());
+
+        if ($expDto !== null) {
+            $expDto->executeChange(
+                ExpDTO::MODE_ADD,
+                ExpDTO::PROPERTY_EXP,
+                $exp
+            );
+        }
+    }
+
+    /**
+     * 물 흐름 이벤트를 처리하는 함수 (BlockFormEvent)
+     */
+    public function onBlockForm(BlockFormEvent $event): void {
+        if ($this->preventWaterFlow) {
+            $block = $event->getBlock();
+            // 물 블록이 형성되는 경우 이벤트를 취소
+            if ($block->getTypeId() === BlockTypeIds::WATER) {
+                $event->cancel();
+            }
+        }
+    }
+
+    /**
+     * 울타리 바로 위에 블록이 있는지 확인
+     */
+    private function hasFenceBelow(Position $position): ?string {
+        $belowBlock = $position->getWorld()->getBlock($position->add(0, -1, 0));
+
+        if ($belowBlock instanceof Fence) {
+            return $this->getFenceType($belowBlock);
+        }
+
+        return null;
+    }
+
+    /**
+     * 블록 업데이트 이벤트 처리 로직
+     */
+    public function handleBlockUpdate(BlockUpdateEvent $event): void {
+        $block = $event->getBlock();
+
+        // 물 블록에 대한 처리
+        if ($block->getTypeId() === BlockTypeIds::WATER) {
+            // 물 아래 블록 확인
+            $belowPos = $block->getPosition()->add(0, -1, 0);
+            $belowBlock = $block->getPosition()->getWorld()->getBlock($belowPos);
+
+            // 물 아래에 울타리가 있으면 이벤트를 취소 (아래로 흐르는 것 방지)
+            if ($belowBlock instanceof Fence) {
+                $event->cancel();
+            }
+        }
+
+        // 울타리 위에 블록 생성
         if ($block instanceof Fence) {
-            // 지원하는 울타리 유형인지 확인
             $fenceType = $this->getFenceType($block);
             if ($fenceType === null) {
                 return; // 지원하지 않는 울타리 유형은 처리하지 않음
             }
 
-            if ($this->generatorMode == "nonInteract") {
-                foreach ($block->getAllSides() as $facing => $block) {
-                    $side = $block->getSide($facing);
-                    if ($side instanceof Water or $block instanceof Water) {
-                        if ($this->checkSource) {
-                            if ($block instanceof Liquid) {
-                                if ($block->isSource()) {
-                                    continue;
-                                }
-                            }
-                        }
-                        if ($block->getTypeId() === BlockTypeIds::AIR or $block->getTypeId() === BlockTypeIds::WATER) {
-                            if ($this->delayTime > 0) {
-                                $this->getScheduler()->scheduleDelayedTask(new ClosureTask(function () use ($block, $fenceType): void {
-                                    $this->setBlock($block->getPosition(), $fenceType);
-                                    $this->playFizzSound($block->getPosition());
-                                }), intval($this->delayTime) * 20);
-                            } elseif ($this->delayTime == 0) {
-                                $this->setBlock($block->getPosition(), $fenceType);
-                                $this->playFizzSound($block->getPosition());
-                            }
-                        }
-                    }
-                }
-                return;
-            }
+            // 울타리 바로 위의 블록
+            $abovePos = $block->getPosition()->add(0, 1, 0);
+            $aboveBlock = $block->getPosition()->getWorld()->getBlock($abovePos);
 
-            if ($this->generatorMode == "interact") {
-                foreach ($block->getAllSides() as $block) {
-                    if ($block instanceof Water) {
-                        if ($this->checkSource) {
-                            if ($block instanceof Liquid) {
-                                if ($block->isSource()) {
-                                    continue;
-                                }
-                            }
-                        }
-                        if ($block->getTypeId() === BlockTypeIds::AIR or $block->getTypeId() === BlockTypeIds::WATER) {
-                            if ($this->delayTime > 0) {
-                                $this->getScheduler()->scheduleDelayedTask(new ClosureTask(function () use ($block, $fenceType): void {
-                                    $this->setBlock($block->getPosition(), $fenceType);
-                                    $this->playFizzSound($block->getPosition());
-                                }), intval($this->delayTime) * 20);
-                            } elseif ($this->delayTime == 0) {
-                                $this->setBlock($block->getPosition(), $fenceType);
-                                $this->playFizzSound($block->getPosition());
-                            }
-                        }
-                    }
+            // 울타리 위에 블록이 공기나 물인 경우 광물 블록 생성
+            if ($aboveBlock->getTypeId() === BlockTypeIds::AIR || $aboveBlock->getTypeId() === BlockTypeIds::WATER) {
+                if ($this->checkSource && $aboveBlock instanceof Liquid && $aboveBlock->isSource()) {
+                    return; // 소스 체크가 활성화되어 있고 물이 소스인 경우 처리하지 않음
                 }
-                return;
+
+                if ($this->delayTime > 0) {
+                    $this->getScheduler()->scheduleDelayedTask(new ClosureTask(function () use ($block, $fenceType): void {
+                        // Position 객체 생성
+                        $pos = new Position(
+                            $block->getPosition()->getX(),
+                            $block->getPosition()->getY() + 1,
+                            $block->getPosition()->getZ(),
+                            $block->getPosition()->getWorld()
+                        );
+                        $this->setBlock($pos, $fenceType);
+                        $this->playFizzSound($pos);
+                    }), intval($this->delayTime) * 20);
+                } else {
+                    // Position 객체 생성
+                    $pos = new Position(
+                        $block->getPosition()->getX(),
+                        $block->getPosition()->getY() + 1,
+                        $block->getPosition()->getZ(),
+                        $block->getPosition()->getWorld()
+                    );
+                    $this->setBlock($pos, $fenceType);
+                    $this->playFizzSound($pos);
+                }
             }
         }
+    }
+
+    /**
+     * 이전 onBlockUpdate 메서드 (더 이상 직접 사용되지 않음)
+     */
+    public function onBlockUpdate(BlockUpdateEvent $event): void {
+        // 이제 handleBlockUpdate 메서드에서 처리됨
+        $this->handleBlockUpdate($event);
     }
 }
