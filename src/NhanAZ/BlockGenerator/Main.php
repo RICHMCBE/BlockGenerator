@@ -71,15 +71,15 @@ class Main extends PluginBase implements Listener {
 
     /** @var array<string, array<int, int>> $blockExpValues */
     private $blockExpValues = [
-        BlockTypeIds::COAL_ORE => 20,
-        BlockTypeIds::IRON_ORE => 30,
-        BlockTypeIds::GOLD_ORE => 30,
-        BlockTypeIds::REDSTONE_ORE => 45,
-        BlockTypeIds::LAPIS_LAZULI_ORE => 45,
-        BlockTypeIds::DIAMOND_ORE => 60,
-        BlockTypeIds::EMERALD_ORE => 80,
-        BlockTypeIds::STONE => 10,
-        BlockTypeIds::COBBLESTONE => 10,
+        BlockTypeIds::COAL_ORE => 10,
+        BlockTypeIds::IRON_ORE => 15,
+        BlockTypeIds::GOLD_ORE => 15,
+        BlockTypeIds::REDSTONE_ORE => 20,
+        BlockTypeIds::LAPIS_LAZULI_ORE => 20,
+        BlockTypeIds::DIAMOND_ORE => 30,
+        BlockTypeIds::EMERALD_ORE => 35,
+        BlockTypeIds::STONE => 1,
+        BlockTypeIds::COBBLESTONE => 1,
     ];
 
     /** @var bool $produceSound */
@@ -348,7 +348,7 @@ class Main extends PluginBase implements Listener {
             $aboveBlock = $block->getPosition()->getWorld()->getBlock($abovePos);
 
             // 울타리 위에 블록이 공기나 물인 경우 광물 블록 생성
-            if ($aboveBlock->getTypeId() === BlockTypeIds::AIR || $aboveBlock->getTypeId() === BlockTypeIds::WATER) {
+            if ($aboveBlock->getTypeId() === BlockTypeIds::WATER) {
                 if ($this->checkSource && $aboveBlock instanceof Liquid && $aboveBlock->isSource()) {
                     return; // 소스 체크가 활성화되어 있고 물이 소스인 경우 처리하지 않음
                 }
